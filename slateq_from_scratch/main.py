@@ -38,7 +38,7 @@ def main():
     optimizer = torch.optim.Adam(user_choice_model.parameters(), lr=0.01)
     loss_fn = nn.CrossEntropyLoss(reduction="sum")
 
-    for _ in range(100):
+    for idx_episode in range(1000):
         obs = env.reset()
         done = False
         entry = {
@@ -79,11 +79,10 @@ def main():
             entry["myopic_reward"] = np.array(myopic_reward, dtype=np.float32)
 
             last_entry = entry
-
-    batch_size = 8
-    train_user_choice_model(
-        user_choice_model, loss_fn, optimizer, buf, batch_size, num_iters=100
-    )
+        if (idx_episode + 1) % 10 == 0:
+            train_user_choice_model(
+                user_choice_model, loss_fn, optimizer, buf, batch_size=16, num_iters=10
+            )
 
 
 def train_user_choice_model(model, loss_fn, optimizer, buf, batch_size, num_iters):
@@ -116,12 +115,28 @@ def pack_state_doc(obs):
     return np.array(list(obs["doc"].values()), dtype=np.float32)
 
 
-def compute_action(obs, user_choice_model):
+def compute_action_greedy(obs, user_choice_model):
     user = obs["user"]
     doc = np.stack(list(obs["doc"].values()), axis=0)
     scores = np.einsum("c,dc->d", user, doc)
     n_docs = len(scores)
     selected = np.random.choice(list(range(n_docs)), 3)
+    action = tuple(selected)
+    return action
+
+
+def compute_action(obs, user_choice_model):
+    user = pack_state_user(obs)
+    doc = pack_state_doc(obs)
+    user = torch.tensor(user).unsqueeze(0)
+    doc = torch.tensor(doc).unsqueeze(0)
+    with torch.no_grad():
+        scores = user_choice_model(user, doc).squeeze(0)
+        # scores = nn.Softmax(dim=-1)(scores)
+        scores = scores.detach().numpy()
+    scores_doc, score_no_click = scores[:-2], scores[-1]
+    selected = np.argsort(scores_doc)[-3:].tolist()
+    # print(scores_doc, selected, score_no_click)
     action = tuple(selected)
     return action
 
