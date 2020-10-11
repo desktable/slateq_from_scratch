@@ -25,14 +25,16 @@ class QModel(nn.Module):
                 num_docs, embedding_size).
 
         Returns:
-            score (torch.Tensor): q_values of shape (batch_size, num_docs).
+            score (torch.Tensor): q_values of shape (batch_size, num_docs+1).
         """
         batch_size, num_docs, embedding_size = doc.shape
         doc_flat = doc.view((batch_size * num_docs, embedding_size))
         user_repeated = user.repeat(num_docs, 1)
         x = torch.cat([user_repeated, doc_flat], dim=1)
         x = self.layers(x)
-        return x.view((batch_size, num_docs))
+        return torch.cat(
+            [x.view((batch_size, num_docs)), torch.zeros((batch_size, 1))], dim=1
+        )
 
 
 if __name__ == "__main__":

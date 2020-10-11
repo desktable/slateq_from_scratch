@@ -15,7 +15,7 @@ class ReplayBuffer:
     def __init__(self):
         self.buffer = []
         self.keys = (
-            "state_user,state_doc,action,click,myopic_reward,"
+            "state_user,state_doc,action,done,click,myopic_reward,"
             "next_state_user,next_state_doc,next_action"
         ).split(",")
 
@@ -42,8 +42,9 @@ def main(choice_model, experiment_name):
         log_dir=f"/tmp/logs/slateq_from_scratch/{choice_model}_{experiment_name}"
     )
 
+    slate_size = 3
     buf = ReplayBuffer()
-    env = make_recsim_env({"slate_size": 3})
+    env = make_recsim_env({"slate_size": slate_size})
 
     user_choice_model = UserChoiceModel()
     optimizer = torch.optim.Adam(user_choice_model.parameters(), lr=0.01)
@@ -61,6 +62,7 @@ def main(choice_model, experiment_name):
             "state_user": None,
             "state_doc": None,
             "action": None,
+            "done": None,
             "click": None,
             "myopic_reward": None,
             "next_state_user": None,
@@ -91,16 +93,23 @@ def main(choice_model, experiment_name):
                 last_entry["next_state_doc"] = pack_state_doc(obs)
                 buf.add(last_entry)
 
+            entry["done"] = np.array(done, dtype=np.bool)
+
             click_idx, myopic_reward = parse_response(obs["response"])
             episode_reward += myopic_reward
-
-            # if not done:
-            #     assert click_idx >= 0, (step, obs, reward, done, info)
 
             entry["click"] = np.array(click_idx, dtype=np.float32)
             entry["myopic_reward"] = np.array(myopic_reward, dtype=np.float32)
 
             last_entry = entry
+
+        if last_entry:
+            # env is "done", just put some random values here
+            action = [0] * slate_size
+            last_entry["next_action"] = np.array(action, dtype=np.int32)
+            last_entry["next_state_user"] = pack_state_user(obs)
+            last_entry["next_state_doc"] = pack_state_doc(obs)
+            buf.add(last_entry)
 
         writer.add_scalar(
             "episode_step",
@@ -158,14 +167,15 @@ def train_q_model(
         with torch.no_grad():
             q_values = q_model(
                 next_user, next_selected_doc
-            )  # shape=[batch_size, slate_size]
+            )  # shape=[batch_size, slate_size+1]
             scores = user_choice_model(
                 next_user, next_selected_doc
             )  # shape=[batch_size, slate_size+1]
             scores = torch.exp(scores - torch.max(scores, dim=1, keepdim=True)[0])
-            next_q_values = torch.sum(q_values * scores[:, :-1], dim=1) / torch.sum(
+            next_q_values = torch.sum(q_values * scores, dim=1) / torch.sum(
                 scores, dim=1
             )  # shape=[batch_size]
+            next_q_values[batch["done"]] = 0.0
         target_q_values = next_q_values + batch["myopic_reward"]  # shape=[batch_size]
 
         selected_doc = torch.cat(
@@ -176,12 +186,12 @@ def train_q_model(
             dim=0,
         )  # shape=[batch_size, slate_size, num_embeddings]
         user = batch["state_user"]
-        q_values = q_model(user, selected_doc)  # shape=[batch_size, slate_size]
+        q_values = q_model(user, selected_doc)  # shape=[batch_size, slate_size+1]
         scores = user_choice_model(
             user, selected_doc
         )  # shape=[batch_size, slate_size+1]
         scores = torch.exp(scores - torch.max(scores, dim=1, keepdim=True)[0])
-        q_values = torch.sum(q_values * scores[:, :-1], dim=1) / torch.sum(
+        q_values = torch.sum(q_values * scores, dim=1) / torch.sum(
             scores, dim=1
         )  # shape=[batch_size]
 
@@ -261,7 +271,9 @@ def compute_action(
         scores = torch.exp(scores - torch.max(scores, dim=-1)[0])
         scores_doc = scores[:-1]  # shape=[num_docs]
         score_no_click = scores[-1]  # shape=[]
-        q_values = q_model(user, doc).squeeze(0)  # shape=[num_docs]
+        q_values = q_model(user, doc).squeeze(0)  # shape=[num_docs+1]
+        q_values_doc = q_values[:-1]  # shape=[num_docs]
+        q_values_no_click = q_values[-1]  # shape=[]
 
     num_docs = len(obs["doc"])
     indices = torch.tensor(np.arange(num_docs)).long()
@@ -269,12 +281,14 @@ def compute_action(
     num_slates, _ = slates.shape
 
     slate_decomp_q_values = torch.gather(
-        q_values.unsqueeze(0).expand(num_slates, num_docs), 1, slates
+        q_values_doc.unsqueeze(0).expand(num_slates, num_docs), 1, slates
     )  # shape=[num_slates, slate_size]
     slate_scores = torch.gather(
         scores_doc.unsqueeze(0).expand(num_slates, num_docs), 1, slates
     )  # shape=[num_slates, slate_size]
-    slate_q_values = (slate_decomp_q_values * slate_scores).sum(dim=1) / (
+    slate_q_values = (
+        slate_decomp_q_values * slate_scores + q_values_no_click * score_no_click
+    ).sum(dim=1) / (
         slate_scores.sum(dim=1) + score_no_click
     )  # shape=[num_slates]
 
