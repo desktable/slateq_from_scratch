@@ -295,6 +295,7 @@ def compute_action(
     idx = np.argmax(slate_q_values.detach().numpy())
     selected = slates[idx].detach().numpy().tolist()
     action = tuple(selected)
+    print("compute_action", q_values.detach().numpy(), scores.detach().numpy(), action)
     return action
 
 

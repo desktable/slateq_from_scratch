@@ -14,6 +14,7 @@ class QModel(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(16, 1),
         )
+        self.no_click_embedding = nn.Parameter(torch.randn(embedding_size) / 10.0)
 
     def forward(self, user: torch.Tensor, doc: torch.Tensor) -> torch.Tensor:
         """Evaluate the user-doc Q model
@@ -32,9 +33,12 @@ class QModel(nn.Module):
         user_repeated = user.repeat(num_docs, 1)
         x = torch.cat([user_repeated, doc_flat], dim=1)
         x = self.layers(x)
-        return torch.cat(
-            [x.view((batch_size, num_docs)), torch.zeros((batch_size, 1))], dim=1
-        )
+        x_no_click = torch.zeros((batch_size, 1))
+        # x_no_click = torch.cat(
+        #     [user, self.no_click_embedding.repeat(batch_size, 1)], dim=1
+        # )
+        # x_no_click = self.layers(x_no_click)
+        return torch.cat([x.view((batch_size, num_docs)), x_no_click], dim=1)
 
 
 if __name__ == "__main__":
