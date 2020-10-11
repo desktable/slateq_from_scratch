@@ -1,13 +1,14 @@
 import random
-from collections import defaultdict
 
+import click
 import numpy as np
 import torch
 import torch.nn as nn
 from ray.rllib.env.wrappers.recsim_wrapper import make_recsim_env
+from tensorboardX import SummaryWriter
 
-from slateq_from_scratch.userchoice import UserChoiceModel
 from slateq_from_scratch.qmodel import QModel
+from slateq_from_scratch.userchoice import UserChoiceModel
 
 
 class ReplayBuffer:
@@ -32,7 +33,15 @@ class ReplayBuffer:
         return ret
 
 
-def main():
+@click.command()
+@click.argument("choice_model", type=str)
+@click.argument("experiment_name", type=str)
+def main(choice_model, experiment_name):
+    assert choice_model in ["slateq", "greedy", "random"]
+    writer = SummaryWriter(
+        log_dir=f"/tmp/logs/slateq_from_scratch/{choice_model}_{experiment_name}"
+    )
+
     buf = ReplayBuffer()
     env = make_recsim_env({"slate_size": 3})
 
@@ -44,7 +53,7 @@ def main():
     q_optimizer = torch.optim.Adam(q_model.parameters())
     q_loss_fn = nn.MSELoss(reduction="sum")
 
-    for idx_episode in range(1000):
+    for idx_episode in range(10000):
         episode_reward = 0.0
         obs = env.reset()
         done = False
@@ -65,7 +74,12 @@ def main():
             entry["state_user"] = pack_state_user(obs)
             entry["state_doc"] = pack_state_doc(obs)
 
-            action = compute_action(obs, user_choice_model, q_model)
+            if choice_model == "random":
+                action = compute_action_random(obs)
+            elif choice_model == "greedy":
+                action = compute_action_choice_model(obs, user_choice_model)
+            else:
+                action = compute_action(obs, user_choice_model, q_model)
 
             entry["action"] = np.array(action, dtype=np.int32)
 
@@ -88,8 +102,26 @@ def main():
 
             last_entry = entry
 
-        print(episode_reward, episode_step)
-
+        writer.add_scalar(
+            "episode_step",
+            episode_step,
+            idx_episode + 1,
+        )
+        writer.add_scalar(
+            "episode_reward",
+            episode_reward,
+            idx_episode + 1,
+        )
+        writer.add_scalar(
+            "choice_model_a",
+            user_choice_model.a.item(),
+            idx_episode + 1,
+        )
+        writer.add_scalar(
+            "choice_model_b",
+            user_choice_model.b.item(),
+            idx_episode + 1,
+        )
         if (idx_episode + 1) % 10 == 0:
             train_user_choice_model(
                 user_choice_model, loss_fn, optimizer, buf, batch_size=4, num_iters=100
@@ -192,14 +224,14 @@ def pack_state_doc(obs):
     return np.array(list(obs["doc"].values()), dtype=np.float32)
 
 
-def compute_action_random(obs, user_choice_model):
+def compute_action_random(obs):
     n_docs = len(obs["doc"])
     selected = np.random.choice(list(range(n_docs)), 3)
     action = tuple(selected)
     return action
 
 
-def compute_action_choice_model(obs, user_choice_model, q_model):
+def compute_action_choice_model(obs, user_choice_model):
     """Select docs with highest click probability"""
     user = pack_state_user(obs)
     doc = pack_state_doc(obs)
