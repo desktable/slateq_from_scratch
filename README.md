@@ -10,5 +10,5 @@
 
 ## Remaining questions
 
-- When there is no clicks, why force Q value to zero?
+- When there are no clicks, why force Q values to be zero?
 - Add episode step as a feature?
